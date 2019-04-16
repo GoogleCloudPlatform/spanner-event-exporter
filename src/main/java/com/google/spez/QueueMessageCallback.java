@@ -22,7 +22,7 @@ import java.util.List;
 public interface QueueMessageCallback {
 
   /**
-   * Handles a batch of {@link QueueMessages}
+   * Handles a batch of {@link QueueMessages}.
    *
    * @param messages List of {@link QueueMessage} to be processed
    */

@@ -54,6 +54,8 @@ allprojects {
     implementation group: 'com.google.cloud', name: 'google-cloud-pubsub', version: '1.63.0'
     implementation group: 'org.apache.avro', name: 'avro', version: '1.8.2'
     implementation group: 'io.netty', name: 'netty-buffer', version: '4.1.33.Final'
+    implementation group: 'com.google.cloud', name: 'google-cloud-storage', version: '1.69.0'
+
 
     // Tracing
     compile group: 'io.opencensus', name: 'opencensus-api', version: '0.19.2'

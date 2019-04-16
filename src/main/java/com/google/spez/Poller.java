@@ -18,20 +18,30 @@ package com.google.spez;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
+import com.google.api.gax.paging.Page;
+import com.google.cloud.ByteArray;
 import com.google.cloud.ServiceOptions;
+import com.google.cloud.Timestamp;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.cloud.pubsub.v1.stub.GrpcSubscriberStub;
 import com.google.cloud.pubsub.v1.stub.SubscriberStub;
 import com.google.cloud.pubsub.v1.stub.SubscriberStubSettings;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
+import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.Type;
+import com.google.cloud.storage.Blob;
+import com.google.cloud.storage.Blob.BlobSourceOption;
+import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.Storage.BlobListOption;
+import com.google.cloud.storage.StorageOptions;
 import com.google.common.collect.Maps;
+import com.google.common.io.ByteSource;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.ProjectSubscriptionName;
@@ -51,14 +61,19 @@ import io.opencensus.exporter.trace.stackdriver.StackdriverExporter;
 import io.opencensus.trace.Tracing;
 import io.opencensus.trace.samplers.Samplers;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
 import org.apache.avro.generic.GenericData;
@@ -107,11 +122,13 @@ class Poller {
   private final DatabaseClient dbClient;
   private final Publisher publisher;
   private final LinkedHashMap<String, String> spannerSchema = Maps.newLinkedHashMap();
+  private final SpezConfig config;
   private Spanner spanner;
   private String lastTimestamp;
   private Schema avroSchema;
 
   public Poller(SpezConfig config) {
+    this.config = config;
     this.avroNamespace = config.avroNamespace;
     this.instanceName = config.instanceName;
     this.dbName = config.dbName;
@@ -195,42 +212,57 @@ class Poller {
    * at startup.
    */
   public void start() {
-    // Add hook to gracefully shutdown the spanner lib
-    Runtime.getRuntime()
-        .addShutdownHook(
-            new Thread() {
-              @Override
-              public void run() {
-                // Use stderr here since the logger may have been reset by its JVM shutdown hook.
-                System.err.println("*** shutting down Poller server since JVM is shutting down");
-                Poller.this.stop();
-                System.err.println("*** service shut down");
-              }
-            });
+    if (config.poll) {
+      // Add hook to gracefully shutdown the spanner lib
+      Runtime.getRuntime()
+          .addShutdownHook(
+              new Thread() {
+                @Override
+                public void run() {
+                  // Use stderr here since the logger may have been reset by its JVM shutdown hook.
+                  System.err.println("*** shutting down Poller server since JVM is shutting down");
+                  Poller.this.stop();
+                  System.err.println("*** service shut down");
+                }
+              });
 
-    // Schedule our poller on a fixed rate to make sure we have a constant delay
-    ScheduledExecutorService scheduler =
-        Executors.newScheduledThreadPool(
-            2,
-            new ThreadFactoryBuilder()
-                .setNameFormat("poller")
-                .build()); // Run in 2 threads so we can poll even if we can't finish before the
-    // next poll starts. This will introduce the error case of a record being
-    // processed multiple times. The archiver should de-dupe the records
-    scheduler.scheduleAtFixedRate(
-        () -> {
-          try {
-            poll();
-          } catch (Exception e) {
-            log.error("poller failed", e);
+      // Schedule our poller on a fixed rate to make sure we have a constant delay
+      ScheduledExecutorService scheduler =
+          Executors.newScheduledThreadPool(
+              2,
+              new ThreadFactoryBuilder()
+                  .setNameFormat("poller")
+                  .build()); // Run in 2 threads so we can poll even if we can't finish before the
+      // next poll starts. This will introduce the error case of a record being
+      // processed multiple times. The archiver should de-dupe the records
+      scheduler.scheduleAtFixedRate(
+          () -> {
+            try {
+              poll();
+            } catch (Exception e) {
+              log.error("poller failed", e);
 
-            stop();
-            System.exit(1);
-          }
-        },
-        0,
-        pollRate,
-        TimeUnit.MILLISECONDS);
+              stop();
+              System.exit(1);
+            }
+          },
+          0,
+          pollRate,
+          TimeUnit.MILLISECONDS);
+    }
+
+    // TODO(XJDR): Should we allow for a custom GCS prefix?
+    if (config.replayToPubSub) {
+      replayToPubSub("", config.replayToPubSubStartTime, config.replayToPubSubEndTime);
+    }
+
+    if (config.replayToQueue) {
+      replayToQueue("", config.replayToQueueStartTime, config.replayToQueueEndTime);
+    }
+
+    if (config.replayToSpanner) {
+      replayToSpanner("", config.replayToSpannerTableName, config.replayToSpannerTimestamp);
+    }
   }
 
   private void getSchema() {
@@ -256,7 +288,7 @@ class Poller {
       final String type = currentRow.getString(1);
       spannerSchema.put(name, type);
       log.debug("Binding Avro Schema");
-      // TODO(JR): Need to strip out size from the type object and add it to the avro datatype i.e
+      // TODO(XJDR): Need to strip out size from the type object and add it to the avro datatype i.e
       // STRING(MAX) vs STRING(1024)
       // Fixed length strings will be unsupported in the first release.
       switch (type) {
@@ -461,11 +493,19 @@ class Poller {
 
         if (publishToPubSub) {
           final PubsubMessage pubSubMessage =
-              PubsubMessage.newBuilder().setData(message).putAttributes("Topic", tableName).build();
+              PubsubMessage.newBuilder()
+                  .setData(message)
+                  .putAttributes("Topic", tableName)
+                  .putAttributes("Timestamp", record.get("Timestamp").toString())
+                  .build();
           final ApiFuture<String> pubSubFuture = publisher.publish(pubSubMessage);
           pubSubFutureList.add(pubSubFuture);
         } else {
-          Queue.send(dbClient, tableName + "_queue", "key", message.toByteArray());
+          Queue.send(
+              dbClient,
+              tableName + "_queue",
+              record.get("Timestamp").toString(),
+              message.toByteArray());
         }
 
       } catch (IOException e) {
@@ -558,6 +598,161 @@ class Poller {
     }
 
     return timestamp;
+  }
+
+  private List<Blob> getListOfRecords(
+      String prefix, String startingTimestampString, String endingTimestampString) {
+    Timestamp startingTimestamp = Timestamp.parseTimestamp(startingTimestampString);
+    Timestamp endingTimestamp = Timestamp.parseTimestamp(endingTimestampString);
+    Storage storage = StorageOptions.getDefaultInstance().getService();
+    Page<Blob> blobs =
+        storage.list(prefix, BlobListOption.currentDirectory(), BlobListOption.prefix(tableName));
+    List<Blob> records =
+        StreamSupport.stream(blobs.iterateAll().spliterator(), false)
+            .parallel()
+            .filter(
+                blob ->
+                    Timestamp.parseTimestamp(blob.getMetadata().get("Timestamp"))
+                            .compareTo(startingTimestamp)
+                        >= 0)
+            .filter(
+                blob ->
+                    Timestamp.parseTimestamp(blob.getMetadata().get("Timestamp"))
+                            .compareTo(endingTimestamp)
+                        <= 0)
+            .collect(Collectors.toList());
+
+    records.sort(
+        new Comparator<Blob>() {
+
+          @Override
+          public int compare(Blob a, Blob b) {
+            int comp =
+                Timestamp.parseTimestamp(a.getMetadata().get("Timestamp"))
+                    .compareTo(Timestamp.parseTimestamp(b.getMetadata().get("Timestamp")));
+
+            return comp;
+          }
+        });
+
+    return records;
+  }
+
+  private void replayToPubSub(String prefix, String beginning, String end) {
+    final List<ApiFuture<String>> pubSubFutureList = new ArrayList<>();
+    final List<Blob> records = getListOfRecords(prefix, beginning, end);
+    records.forEach(
+        record -> {
+          final PubsubMessage pubSubMessage =
+              PubsubMessage.newBuilder()
+                  .setData(
+                      ByteString.copyFrom(record.getContent(BlobSourceOption.generationMatch())))
+                  .putAttributes("Topic", tableName)
+                  .putAttributes("Timestamp", record.getMetadata().get("Timestamp").toString())
+                  .build();
+          final ApiFuture<String> pubSubFuture = publisher.publish(pubSubMessage);
+          pubSubFutureList.add(pubSubFuture);
+        });
+
+    try {
+      final List<String> messageIds = ApiFutures.allAsList(pubSubFutureList).get();
+
+      for (String messageId : messageIds) {
+        log.debug("Published record " + messageId + " to pubsub");
+      }
+    } catch (InterruptedException | ExecutionException e) {
+      log.error(
+          "Unable to get pubSub publish future and cannot verify that the record was properly published",
+          e);
+    }
+  }
+
+  private void replayToQueue(String prefix, String beginning, String end) {
+    List<Blob> records = getListOfRecords(prefix, beginning, end);
+    records.forEach(
+        record -> {
+          Queue.send(
+              dbClient,
+              tableName + "_queue",
+              record.getMetadata().get("Timestamp").toString(),
+              record.getContent(BlobSourceOption.generationMatch()));
+        });
+  }
+
+  private Timestamp replayToSpanner(String prefix, String newTableName, String timestamp) {
+    // When writing relatively large rows, a commit size of 1 MB to 5 MB usually provides the best
+    // performance. When writing small values, or values that are indexed, it is generally best to
+    // write at most a few hundred rows in a single commit. Independently from the commit size and
+    // number of rows, be aware that there is a limitation of 20,000 mutations per commit.
+    getSchema();
+    final List<Schema.Field> fields = avroSchema.getFields();
+    final List<Mutation> mutations = new ArrayList<>();
+    final List<Blob> records = getListOfRecords(prefix, startingTimestamp, timestamp);
+    final DatumReader<GenericRecord> datumReader =
+        new GenericDatumReader<GenericRecord>(avroSchema);
+
+    records.forEach(
+        gcsRecord -> {
+          try {
+            final Mutation.WriteBuilder mutationBuilder =
+                Mutation.newInsertOrUpdateBuilder(newTableName);
+            final InputStream stream =
+                ByteSource.wrap(gcsRecord.getContent(BlobSourceOption.generationMatch()))
+                    .openStream();
+            final JsonDecoder decoder = DecoderFactory.get().jsonDecoder(avroSchema, stream);
+            final GenericRecord record = datumReader.read(null, decoder);
+
+            fields.forEach(
+                field -> {
+                  final String name = field.schema().getName();
+                  final Schema.Type type = field.schema().getType();
+                  switch (type) {
+                    case ARRAY:
+                      // TODO(XJDR): Not sure if this is the best option here ...
+                      mutationBuilder.set(name).to((Struct) record.get(name));
+                      break;
+                    case BOOLEAN:
+                      mutationBuilder.set(name).to((boolean) record.get(name));
+                      break;
+                    case BYTES:
+                      mutationBuilder.set(name).to(ByteArray.copyFrom((byte[]) record.get(name)));
+                      break;
+                    case DOUBLE:
+                      mutationBuilder.set(name).to((double) record.get(name));
+                      break;
+                    case LONG:
+                      mutationBuilder.set(name).to((long) record.get(name));
+                      break;
+                    case STRING:
+                      if (name.equals("Timestamp")) {
+                        mutationBuilder.set(name).to((Timestamp) record.get(name));
+                      } else {
+                        mutationBuilder.set(name).to((String) record.get(name));
+                      }
+                      break;
+                    default:
+                      log.error(
+                          "Was not able to replay record. Did not recognize the Type: "
+                              + type
+                              + "for Column: "
+                              + name);
+                      break;
+                  }
+                });
+
+            mutations.add(mutationBuilder.build());
+
+            if (mutations.size() > 15000) {
+              dbClient.write(mutations);
+              mutations.clear();
+            }
+
+          } catch (IOException e) {
+            log.error("Replaying archive to Spanner failed: ", e);
+          }
+        });
+
+    return dbClient.write(mutations);
   }
 
   private void stop() {

@@ -18,9 +18,7 @@ package com.google.spez;
 
 import com.typesafe.config.Config;
 
-/**
- * Creates the wrapper by passing in a typesafe Config object.
- */
+/** Creates the wrapper by passing in a typesafe Config object. */
 public class SpezConfig {
   public final int pollRate;
   public final String recordLimit;
@@ -30,6 +28,16 @@ public class SpezConfig {
   public final String startingTimestamp;
   public final String avroNamespace;
   public final boolean publishToPubSub;
+  public final boolean poll;
+  public final boolean replayToPubSub;
+  public final String replayToPubSubStartTime;
+  public final String replayToPubSubEndTime;
+  public final boolean replayToQueue;
+  public final String replayToQueueStartTime;
+  public final String replayToQueueEndTime;
+  public final boolean replayToSpanner;
+  public final String replayToSpannerTableName;
+  public final String replayToSpannerTimestamp;
 
   /**
    * Wraps the typesafe config file.
@@ -45,5 +53,15 @@ public class SpezConfig {
     this.recordLimit = config.getString("spez.recordLimit");
     this.startingTimestamp = config.getString("spez.startingTimestamp");
     this.publishToPubSub = config.getBoolean("spez.publishToPubSub");
+    this.poll = config.getBoolean("spez.poll");
+    this.replayToPubSub = config.getBoolean("spez.replayToPubSub");
+    this.replayToPubSubStartTime = config.getString("spez.replayToPubSubStartTime");
+    this.replayToPubSubEndTime = config.getString("spez.replayToPubSubEndTime");
+    this.replayToQueue = config.getBoolean("spez.replayToQueue");
+    this.replayToQueueStartTime = config.getString("spez.replayToQueueStartTime");
+    this.replayToQueueEndTime = config.getString("spez.replayToQueueEndTime");
+    this.replayToSpanner = config.getBoolean("spez.replayToSpanner");
+    this.replayToSpannerTableName = config.getString("spez.replayToSpannerTableName");
+    this.replayToSpannerTimestamp = config.getString("spez.replayToSpannerTimestamp");
   }
 }

@@ -74,6 +74,16 @@ spez {
   recordLimit="200"
   startingTimestamp="2019-03-06T01:29:25.500000Z"
   publishToPubSub=true
+  poll=true
+  replayToPubSub=false
+  replayToPubSubStartTime="2019-03-06T01:29:25.500000Z"
+  replayToPubSubEndTime="2019-03-06T01:29:25.500000Z"
+  replayToQueue=false
+  replayToQueueStartTime="2019-03-06T01:29:25.500000Z"
+  replayToQueueEndTime="2019-03-06T01:29:25.500000Z"
+  replayToSpanner=false
+  replayToSpannerTableName="spez_poller_table_replay"
+  replayToSpannerTimestamp="2019-03-06T01:29:25.500000Z"
 }
 ```
 
@@ -102,6 +112,17 @@ data:
   FUNCTION: "archiver"
   BUCKET_REGION: "us-west-1"
   BUCKET_NAME: "gs://spez_archive/spez_poller_table"
+  POLL: true
+  REPLAY_TO_PUBSUB: false
+  REPLAY_TO_PUBSUB_STARTTIME: "2019-03-06T01:29:25.500000Z"
+  REPLAY_TO_PUBSUB_ENDTIME: "2019-03-06T01:29:25.500000Z"
+  REPLAY_TO_QUEUE: false
+  REPLAY_TO_QUEUE_STARTTIME: "2019-03-06T01:29:25.500000Z"
+  REPLAY_TO_QUEUE_ENDTIME: "2019-03-06T01:29:25.500000Z"
+  REPLAY_TO_SPANNER: false
+  REPLAY_TO_SPANNER_TABLENAME: "spez_poller_table_replay"
+  REPLAY_TO_SPANNER_TIMESTAMP: "2019-03-06T01:29:25.500000Z"
+
 ```
 
 ## Create a Spanner Table
@@ -296,6 +317,26 @@ need that functionality, you can set the "publishToPubSub" config option to
 `false`, and spez will publish all of your records to a queue named tableName +
 "_queue". This is simpler and more performant but could cause additional
 resource consumption on your spanner instance.
+
+## Replay from Google Cloud Storage
+
+If you leverage the archiver.go cloud function and / or provide your own archive
+to GCS (and follow the same guidelines, specifically the Timestamp metadata 
+tag attached to the Blob) you can replay your events from a point in time to 
+another point in time. These options are configurable via the config maps or 
+the environment variables. There are 3 options for replay:
+ - Replay To PubSub
+ - Replay To Spez Queue
+ - Replay to Spanner Table
+
+Replaying to PubSub and Spanner Queue will allow you to ingest events just like
+you would when they were written.
+
+Replaying to a new Spanner Table will enable you to get a point in time snapshot
+of the state of the system at a given point in time. If you set the point in
+time timestamp to the current time or some point in the future, you can leverage
+the replay to Spanner Table to back up and restore your Table in a different
+region or for staging env, etc. 
 
 ## JMX Monitoring
 

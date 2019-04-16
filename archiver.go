@@ -17,12 +17,13 @@
 package spez
 
 import (
-	"cloud.google.com/go/storage"
 	"context"
 	"log"
 	"math/rand"
 	"strings"
 	"time"
+
+	"cloud.google.com/go/storage"
 )
 
 // PubSubMessage is the payload of a Pub/Sub event.
@@ -84,6 +85,7 @@ func archiver(ctx context.Context, m PubSubMessage) error {
 	wc.Metadata = map[string]string{
 		"x-spez-message-id":   m.ID,
 		"x-spez-publish-time": m.PublishTime.String(),
+		"x-spez-timestamp":    m.Attributes["Timestamp"],
 	}
 
 	if _, err := wc.Write(m.Data); err != nil {

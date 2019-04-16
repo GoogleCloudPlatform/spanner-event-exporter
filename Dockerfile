@@ -42,5 +42,15 @@ ENTRYPOINT ["java", \
   "-Dspez.recordLimit=$RECORD_LIMIT", \
   "-Dspez.startingTimestamp=$STARTING_TIMESTAMP", \
   "-Dspez.publishToPubSub=$PUBLISH_TO_PUBSUB", \
+  "-Dspez.poll=$POLL", \
+  "-Dspez.replayToPubSub=$REPLAY_TO_PUBSUB", \
+  "-Dspez.replayToPubSubStartTime=$REPLAY_TO_PUBSUB_STARTTIME", \
+  "-Dspez.replayToPubSubEndTime=$REPLAY_TO_PUBSUB_ENDTIME", \
+  "-Dspez.replayToQueue=$REPLAY_TO_QUEUE", \
+  "-Dspez.replayToQueueStartTime=$REPLAY_TO_QUEUE_STARTTIME", \
+  "-Dspez.replayToQueueEndTime=$REPLAY_TO_QUEUE_ENDTIME", \
+  "-Dspez.replayToSpanner=$REPLAY_TO_SPANNER", \
+  "-Dspez.replayToSpannerTableName=$REPLAY_TO_SPANNER_TABLENAME", \
+  "-Dspez.replayToSpannerTimestamp=$REPLAY_TO_SPANNER_TIMESTAMP", \
   "-jar",\
   "spez-poller.jar"]
